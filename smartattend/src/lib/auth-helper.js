@@ -16,13 +16,18 @@ export async function getAuthenticatedUser(context) {
 
   let session;
   
-  // Check if this is a server-side call (has req and res) or client-side
-  if (context.req && context.res) {
-    // Server-side: use getServerSession
-    session = await getServerSession(context.req, context.res, authOptions);
+  // Prefer server-side session whenever a req exists (API routes/SSR); derive res if omitted
+  if (context && context.req) {
+    const req = context.req;
+    const res = context.res || req.res || undefined;
+    session = await getServerSession(req, res, authOptions);
+    // Fallback to client session only if server session couldn't be obtained
+    if (!session) {
+      session = await getSession({ req });
+    }
   } else {
-    // API route or client-side: use getSession
-    session = await getSession({ req: context.req });
+    // Pure client-side usage
+    session = await getSession();
   }
 
   if (session && session.user && session.user.email) {

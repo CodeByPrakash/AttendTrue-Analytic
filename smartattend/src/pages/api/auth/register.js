@@ -6,7 +6,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ message: 'Method Not Allowed' });
   }
 
-  const { firstName, lastName, email, password, instituteId } = req.body;
+  const { firstName, lastName, email, password, instituteId, department, studentId, phone } = req.body;
 
   if (!firstName || !lastName || !email || !password || !instituteId) {
     return res.status(400).json({ message: 'Missing required fields (firstName, lastName, email, password, instituteId)' });
@@ -52,12 +52,12 @@ export default async function handler(req, res) {
       registeredAt: new Date().toISOString(),
       courses: [],
       profile: {
-        phone: '',
+        phone: phone || '',
         imageUrl: ''
       },
       academic: {
-        department: '',
-        studentId: '',
+        department: department || '',
+        studentId: studentId || '',
         rollNo: '',
         registrationNo: '',
         section: '',

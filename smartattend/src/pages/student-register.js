@@ -12,7 +12,8 @@ export default function StudentRegister() {
     confirmPassword: '',
     department: '',
     studentId: '',
-    phone: ''
+    phone: '',
+    instituteId: ''
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -31,7 +32,7 @@ export default function StudentRegister() {
 
     // Validation
     if (!formData.firstName || !formData.lastName || !formData.email || 
-        !formData.password || !formData.department || !formData.studentId) {
+        !formData.password || !formData.department || !formData.studentId || !formData.instituteId) {
       setError('Please fill in all required fields');
       setLoading(false);
       return;
@@ -55,7 +56,16 @@ export default function StudentRegister() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          firstName: formData.firstName,
+          lastName: formData.lastName,
+          email: formData.email,
+          password: formData.password,
+          instituteId: formData.instituteId,
+          department: formData.department,
+          studentId: formData.studentId,
+          phone: formData.phone
+        }),
       });
 
       const data = await response.json();
@@ -121,6 +131,20 @@ export default function StudentRegister() {
               value={formData.email}
               onChange={handleInputChange}
               className="form-input"
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="instituteId">Institute ID *</label>
+            <input
+              type="text"
+              id="instituteId"
+              name="instituteId"
+              value={formData.instituteId}
+              onChange={handleInputChange}
+              className="form-input"
+              placeholder="Enter your institute/college ID"
               required
             />
           </div>

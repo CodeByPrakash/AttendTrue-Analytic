@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   }
 
   // Authenticate user
-  const user = await getAuthenticatedUser({ req });
+  const user = await getAuthenticatedUser({ req, res });
   if (!user) {
     return res.status(401).json({ message: 'Unauthorized' });
   }

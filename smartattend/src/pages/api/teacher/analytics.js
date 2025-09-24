@@ -1,8 +1,9 @@
-import { getSession } from 'next-auth/react';
+import { getServerSession } from 'next-auth/next';
+import { authOptions } from '../auth/[...nextauth]';
 import dbConnect from '../../../lib/couchdb';
 
 export default async function handler(req, res) {
-  const nextAuthSession = await getSession({ req });
+    const nextAuthSession = await getServerSession(req, res, authOptions);
 
   if (!nextAuthSession || !nextAuthSession.user || nextAuthSession.user.role !== 'teacher') {
     return res.status(401).json({ message: 'Unauthorized' });

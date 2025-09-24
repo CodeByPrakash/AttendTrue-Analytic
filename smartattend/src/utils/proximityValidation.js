@@ -214,12 +214,22 @@ export function generateValidationReport(sessionDoc, studentNetworkInfo, options
     (!requireGeolocation || geofenceOk)
   );
 
+  // New: same public IP enforcement if required
+  const netReq = sessionDoc.validationRequirements?.network;
+  let samePublicIpOk = true;
+  if (netReq?.requireSamePublicIp) {
+    const expected = (netReq.expectedPublicIp || '').trim();
+    const got = (studentNetworkInfo?.serverSeenIp || '').trim();
+    samePublicIpOk = !!expected && !!got && expected === got;
+  }
+
   return {
     proximity: { ...proximityValidation, primaryFactorsPassed, primaryThreshold },
     security: securityValidation,
     spoofing: spoofingCheck,
     geofence: { required: requireGeolocation, ok: geofenceOk, radiusMeters: geofenceRadius },
-    isValid: overall && securityValidation && !spoofingCheck.isSuspicious,
+    network: { samePublicIpRequired: !!netReq?.requireSamePublicIp, samePublicIpOk },
+    isValid: overall && securityValidation && !spoofingCheck.isSuspicious && (!netReq?.requireSamePublicIp || samePublicIpOk),
     timestamp: new Date().toISOString()
   };
 }

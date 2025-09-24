@@ -13,6 +13,11 @@ export default function CreateSessionPage({ courses }) {
   const [roster, setRoster] = useState([]);
   const [attendanceMap, setAttendanceMap] = useState({});
   const [isLoading, setIsLoading] = useState(false);
+  const [ssid, setSsid] = useState('');
+  const [requireSameNetwork, setRequireSameNetwork] = useState(true);
+  const [finalizing, setFinalizing] = useState(false);
+  const [finalizeMessage, setFinalizeMessage] = useState('');
+  const [sessionEnded, setSessionEnded] = useState(false);
   const router = useRouter();
 
   const handleCreateSession = async (e) => {
@@ -42,7 +47,15 @@ export default function CreateSessionPage({ courses }) {
     const res = await fetch('/api/teacher/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ courseId, duration, networkInfo }),
+      body: JSON.stringify({
+        courseId,
+        duration,
+        networkInfo,
+        networkRequirement: {
+          ssid,
+          requireSamePublicIp: requireSameNetwork
+        }
+      }),
     });
 
     const data = await res.json();
@@ -94,6 +107,9 @@ export default function CreateSessionPage({ courses }) {
   }
 
   async function finalize() {
+    setFinalizing(true);
+    setError('');
+    setFinalizeMessage('');
     try {
       const res = await fetch('/api/teacher/finalize-session', {
         method: 'POST',
@@ -101,10 +117,23 @@ export default function CreateSessionPage({ courses }) {
         body: JSON.stringify({ sessionId: sessionData.sessionId })
       });
       const json = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        router.push('/login?error=SessionExpired');
+        return;
+      }
       if (!res.ok) throw new Error(json.message || 'Finalize failed');
-      setError('');
+      setFinalizeMessage(`Session finalized. ${typeof json.markedAbsent === 'number' ? json.markedAbsent : 0} students marked absent.`);
+      setSessionEnded(true);
+      setSessionData(prev => prev ? { ...prev, endTime: new Date().toISOString() } : prev);
+      try {
+        const attRes = await fetch(`/api/teacher/session-attendance?sessionId=${encodeURIComponent(sessionData.sessionId)}`);
+        const attJson = await attRes.json().catch(() => ({}));
+        if (attRes.ok && attJson.attendance) setAttendanceMap(attJson.attendance);
+      } catch (_) {}
     } catch (e) {
       setError(e.message);
+    } finally {
+      setFinalizing(false);
     }
   }
 
@@ -131,6 +160,16 @@ export default function CreateSessionPage({ courses }) {
             </button>
             {error && <p className="form-error">{error}</p>}
           </form>
+          <div style={{ marginTop: '1rem' }}>
+            <h3>Network Requirement (optional)</h3>
+            <label className="form-label" htmlFor="ssid">Required Wi‑Fi (SSID)</label>
+            <input id="ssid" type="text" value={ssid} onChange={(e) => setSsid(e.target.value)} placeholder="e.g., Campus-WiFi" className="form-input" />
+            <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input type="checkbox" checked={requireSameNetwork} onChange={(e) => setRequireSameNetwork(e.target.checked)} />
+              Require same public IP (same network)
+            </label>
+            <p style={{ color: '#666', fontSize: 12 }}>Students will be asked to connect to this network and the server will verify they are on the same public IP as you.</p>
+          </div>
         </div>
 
   {/* QR Code and Session Code Display Section */}
@@ -147,7 +186,20 @@ export default function CreateSessionPage({ courses }) {
                 <input type="text" readOnly value={sessionData.sessionId} className="form-input" style={{textAlign: 'center', fontWeight: 'bold', fontSize: '1.2rem'}} />
               </div>
               <p>Expires at: {new Date(sessionData.endTime).toLocaleTimeString()}</p>
-              <button className="form-button" style={{ marginTop: '0.75rem', background: '#ef4444' }} onClick={finalize}>Finalize Session</button>
+              <button
+                className="form-button"
+                style={{ marginTop: '0.75rem', background: sessionEnded ? '#9ca3af' : '#ef4444' }}
+                onClick={finalize}
+                disabled={finalizing || sessionEnded}
+              >
+                {finalizing ? 'Finalizing…' : sessionEnded ? 'Finalized' : 'Finalize Session'}
+              </button>
+              {finalizeMessage && (
+                <p style={{ color: '#16a34a', marginTop: 8 }}>{finalizeMessage}</p>
+              )}
+              {error && (
+                <p className="form-error" style={{ marginTop: 6 }}>{error}</p>
+              )}
             </div>
           ) : (
             <p style={{marginTop: '2rem'}}>Your session code will appear here once generated.</p>
@@ -175,14 +227,17 @@ export default function CreateSessionPage({ courses }) {
                           <td style={{ padding: '6px' }}>{s.email}</td>
                           <td style={{ padding: '6px' }}>{st}</td>
                           <td style={{ padding: '6px' }}>
-                            <button className="form-button" onClick={() => mark(s._id, 'present')}>Present</button>
-                            <button className="form-button" style={{ background: '#f59e0b', marginLeft: 6 }} onClick={() => mark(s._id, 'left_early')}>Left Early</button>
+                            <button className="form-button" onClick={() => mark(s._id, 'present')} disabled={sessionEnded}>Present</button>
+                            <button className="form-button" style={{ background: '#f59e0b', marginLeft: 6 }} onClick={() => mark(s._id, 'left_early')} disabled={sessionEnded}>Left Early</button>
                           </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
+              )}
+              {sessionEnded && (
+                <p style={{ color: '#666', marginTop: 8 }}>Session has been finalized. Manual updates are disabled.</p>
               )}
             </div>
           )}

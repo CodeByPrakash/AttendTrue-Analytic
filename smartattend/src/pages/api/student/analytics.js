@@ -8,7 +8,7 @@ import {
 
 export default async function handler(req, res) {
   // Use the unified helper to get the user
-  const user = await getAuthenticatedUser({ req });
+  const user = await getAuthenticatedUser({ req, res });
 
   if (!user || user.role !== 'student') {
     return res.status(401).json({ message: 'Unauthorized' });

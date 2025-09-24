@@ -8,7 +8,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ message: 'Method Not Allowed' });
   }
 
-  const user = await getAuthenticatedUser({ req });
+  const user = await getAuthenticatedUser({ req, res });
   if (!user || user.role !== 'admin') {
     return res.status(401).json({ message: 'Unauthorized' });
   }

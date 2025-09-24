@@ -9,7 +9,7 @@ export default async function handler(req, res) {
   }
 
   // Use the unified helper to get the user
-  const user = await getAuthenticatedUser({ req });
+  const user = await getAuthenticatedUser({ req, res });
   if (!user || user.role !== 'student') {
     return res.status(401).json({ message: 'Unauthorized' });
   }
@@ -79,7 +79,8 @@ export default async function handler(req, res) {
       }
 
       // Run comprehensive validation
-      const netInfo = { ...clientNetworkInfo, ipAddress: req.headers['x-forwarded-for'] || req.socket.remoteAddress };
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const netInfo = { ...clientNetworkInfo, ipAddress: ip, serverSeenIp: ip };
       validationResult = generateValidationReport(sessionDoc, netInfo, { geofenceRadiusMeters: sessionDoc.validationRequirements?.geofenceRadiusMeters || 50 });
       
       if (!validationResult.isValid) {

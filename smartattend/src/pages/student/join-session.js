@@ -23,28 +23,73 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
   const [feedback, setFeedback] = useState('Choose how you want to join the session.');
   const [sessionKey, setSessionKey] = useState('');
   const [networkInfo, setNetworkInfo] = useState(null);
+  const [requiredSsid, setRequiredSsid] = useState('');
+  const [requireSameNetwork, setRequireSameNetwork] = useState(false);
+  const [networkGateVisible, setNetworkGateVisible] = useState(false);
+  const [checkingNet, setCheckingNet] = useState(false);
+  const [networkOk, setNetworkOk] = useState(false);
   const [isGatheringNetwork, setIsGatheringNetwork] = useState(false);
   const [validationQuality, setValidationQuality] = useState(null);
   const videoRef = useRef(); // face scan video
   const canvasRef = useRef();
+  const faceScanRafRef = useRef(null);
+  const faceStreamRef = useRef(null);
+  const modelsLoadedRef = useRef(false);
   const qrVideoRef = useRef(null); // QR scan video
   const qrCanvasRef = useRef(null);
   const qrScanIntervalRef = useRef(null);
   const qrStreamRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const [qrUploadFallback, setQrUploadFallback] = useState(false);
+  const [modelsStatus, setModelsStatus] = useState('');
 
   useEffect(() => {
+    // Best-effort eager model preload; detection will also ensure loading at runtime
     const loadModels = async () => {
-      if (faceapi && faceapi.nets?.ssdMobilenetv1?.loadFromUri) {
+      try {
+        // Ensure faceapi is available
+        if (!faceapi) {
+          const mod = await import('face-api.js');
+          faceapi = mod;
+        }
         const MODEL_URL = '/models';
+        // Prefer tiny models for mobile performance
         await Promise.all([
-          faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
-          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
           faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
         ]);
+        modelsLoadedRef.current = true;
+        setModelsStatus('models-ready');
+      } catch (err) {
+        // Non-blocking; runtime will retry
+        setModelsStatus('models-load-error');
       }
     };
     loadModels();
   }, []);
+
+  const ensureModelsLoaded = async () => {
+    if (modelsLoadedRef.current) return true;
+    try {
+      if (!faceapi) {
+        const mod = await import('face-api.js');
+        faceapi = mod;
+      }
+      const MODEL_URL = '/models';
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+      ]);
+      modelsLoadedRef.current = true;
+      setModelsStatus('models-ready');
+      return true;
+    } catch (e) {
+      setModelsStatus('models-load-error');
+      return false;
+    }
+  };
 
   const validateAndProceed = async (scannedSessionKey) => {
     setFeedback('Validating session...');
@@ -54,13 +99,25 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionKey: scannedSessionKey }),
       });
-
+      const meta = await res.json().catch(() => null);
       if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.message || 'Session validation failed.');
+        throw new Error(meta?.message || 'Session validation failed.');
       }
 
       setSessionKey(scannedSessionKey);
+      // Read required network from session meta for UI hint
+      try {
+        const netReq = meta?.session?.validationRequirements?.network;
+        if (netReq?.requireSamePublicIp) {
+          setRequireSameNetwork(true);
+          setRequiredSsid(netReq?.ssid || '');
+          setNetworkGateVisible(true);
+        } else {
+          setRequireSameNetwork(false);
+          setNetworkGateVisible(false);
+          setNetworkOk(true);
+        }
+      } catch {}
       if (needsReverification) {
         setStep('promptToReverify');
         setFeedback('Your face scan is older than 6 months. Please go to your profile to re-verify.');
@@ -120,7 +177,7 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
         },
         audio: false
       };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await getUserMediaSafe(constraints);
       qrStreamRef.current = stream;
       if (qrVideoRef.current) {
         qrVideoRef.current.srcObject = stream;
@@ -155,7 +212,8 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
       setFeedback('Point the QR code inside the box.');
     } catch (err) {
       console.error('QR camera error:', err);
-      setFeedback('Could not access camera. Please enable permissions and use a secure origin (https or localhost).');
+      setFeedback('Could not access camera. On mobile, camera requires HTTPS or localhost. You can also upload a QR photo below.');
+      setQrUploadFallback(true);
     }
   };
 
@@ -216,6 +274,11 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
       const result = await res.json();
 
       if (!res.ok) {
+        if (res.status === 401) {
+          // Session expired or missing; send back to login
+          router.push('/login?error=SessionExpired');
+          return;
+        }
         throw new Error(result.message || 'Attendance marking failed');
       }
 
@@ -237,19 +300,154 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
     }
   };
 
-  const startVideo = () => {
-    navigator.mediaDevices.getUserMedia({ video: {} })
-      .then(stream => {
-        if (videoRef.current) videoRef.current.srcObject = stream;
-      })
-      .catch(err => setFeedback('Could not access camera. Please enable permissions.'));
+  const checkNetworkMatches = async () => {
+    setCheckingNet(true);
+    try {
+      // Best-effort ping to reflect current public IP; server enforces on submit
+      await fetch('/api/network/echo', { cache: 'no-store' }).catch(() => {});
+      setNetworkOk(true);
+      setNetworkGateVisible(false);
+      // If face scan is the next step, inform the user; otherwise proceed with proximity-only
+      if (step === 'faceScan') {
+        setFeedback('Network confirmed. Proceeding to face scan...');
+        // face scan flow will continue via handleVideoOnPlay
+      } else {
+        setFeedback('Network confirmed. Proceeding...');
+        // Proceed using multi-factor (network) without biometrics
+        proceedToAttendanceMarking();
+      }
+    } finally {
+      setCheckingNet(false);
+    }
+  };
+
+  const stopFaceCamera = () => {
+    if (faceScanRafRef.current) {
+      cancelAnimationFrame(faceScanRafRef.current);
+      faceScanRafRef.current = null;
+    }
+    const stream = faceStreamRef.current;
+    if (stream && typeof stream.getTracks === 'function') {
+      stream.getTracks().forEach(t => {
+        try { t.stop(); } catch {}
+      });
+    }
+    faceStreamRef.current = null;
+    if (videoRef.current) {
+      try { videoRef.current.pause(); } catch {}
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  const startFaceScan = async () => {
+    try {
+      setFeedback('Preparing face scan...');
+      const ok = await ensureModelsLoaded();
+      if (!ok) {
+        setFeedback('Face models failed to load. Check your network and try again.');
+        return;
+      }
+      // Prefer front camera on phones
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'user' },
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        },
+        audio: false
+      };
+      const stream = await getUserMediaSafe(constraints);
+      faceStreamRef.current = stream;
+      if (!videoRef.current) return;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play().catch(() => {});
+
+      // Align canvas to video
+      const videoEl = videoRef.current;
+      const canvasEl = canvasRef.current;
+      const setupCanvas = () => {
+        if (!videoEl || !canvasEl) return;
+        const w = videoEl.videoWidth || 640;
+        const h = videoEl.videoHeight || 480;
+        canvasEl.width = w;
+        canvasEl.height = h;
+      };
+      setupCanvas();
+
+      const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 192, scoreThreshold: 0.5 });
+      const ctx = canvasEl?.getContext('2d') || null;
+
+      const loop = async () => {
+        if (!videoRef.current || !canvasRef.current) return; // component unmounted
+        try {
+          const v = videoRef.current;
+          if (v.readyState < 2) {
+            faceScanRafRef.current = requestAnimationFrame(loop);
+            return;
+          }
+          // Clear and draw current frame lightly for UX
+          if (ctx) {
+            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          }
+          const detection = await faceapi
+            .detectSingleFace(v, options)
+            .withFaceLandmarks(true)
+            .withFaceDescriptor();
+
+          if (detection && detection.descriptor && detection.descriptor.length === 128) {
+            // Draw box for feedback
+            if (ctx && detection.detection) {
+              const box = detection.detection.box;
+              ctx.strokeStyle = '#4ade80';
+              ctx.lineWidth = 3;
+              ctx.strokeRect(box.x, box.y, box.width, box.height);
+            }
+            setFeedback('Face detected. Verifying...');
+            // Stop loop and submit
+            cancelAnimationFrame(faceScanRafRef.current);
+            faceScanRafRef.current = null;
+            const net = networkInfo || await gatherNetworkInformation();
+            await submitAttendanceWithBiometrics(Array.from(detection.descriptor), net);
+            // After submission, stop camera
+            stopFaceCamera();
+            return;
+          } else {
+            setFeedback('Looking for your face. Hold steady and ensure good lighting.');
+          }
+        } catch (err) {
+          // Soft-fail and continue the loop
+        }
+        faceScanRafRef.current = requestAnimationFrame(loop);
+      };
+      faceScanRafRef.current = requestAnimationFrame(loop);
+    } catch (err) {
+      setFeedback('Could not access camera for face scan. Ensure HTTPS and grant permission.');
+    }
   };
 
   useEffect(() => {
     if (step === 'faceScan') {
-      startVideo();
+      startFaceScan();
+    } else {
+      stopFaceCamera();
     }
+    return () => {
+      if (step !== 'faceScan') return;
+      stopFaceCamera();
+    };
   }, [step]);
+
+  // Proactively inform the user if the context is insecure (no HTTPS/localhost)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const host = window.location.hostname;
+      const isLocalhost = host === 'localhost' || host === '127.0.0.1';
+      if (!window.isSecureContext && !isLocalhost) {
+        setQrUploadFallback(true);
+        setFeedback('Camera requires HTTPS or localhost. Upload a photo of the QR, enter the code manually, or open this page over HTTPS.');
+      }
+    }
+  }, []);
 
   // Start/stop QR camera based on UI state
   useEffect(() => {
@@ -263,27 +461,7 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
   }, [mode, step]);
 
   const handleVideoOnPlay = async () => {
-    try {
-      if (!faceapi || !videoRef.current) return;
-      const videoEl = videoRef.current;
-      const displaySize = { width: videoEl.videoWidth, height: videoEl.videoHeight };
-      if (canvasRef.current) faceapi.matchDimensions(canvasRef.current, displaySize);
-      const detection = await faceapi
-        .detectSingleFace(videoEl)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
-      if (detection && detection.descriptor && detection.descriptor.length === 128) {
-        setFeedback('Face detected. Proceeding with validation...');
-        // After detection, proceed to gather network info and submit attendance
-        const net = networkInfo || await gatherNetworkInformation();
-        await submitAttendanceWithBiometrics(Array.from(detection.descriptor), net);
-      } else {
-        setFeedback('No face detected. Please ensure good lighting and try again.');
-      }
-    } catch (e) {
-      console.error('Face scan error:', e);
-      setFeedback('Face scan failed. Please try again.');
-    }
+    // Kept for compatibility; actual detection runs via startFaceScan loop
   };
 
   const submitAttendanceWithBiometrics = async (descriptor, net) => {
@@ -299,13 +477,84 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
         })
       });
       const result = await res.json();
-      if (!res.ok) throw new Error(result.message || 'Attendance marking failed');
+      if (!res.ok) {
+        if (res.status === 401) {
+          router.push('/login?error=SessionExpired');
+          return;
+        }
+        throw new Error(result.message || 'Attendance marking failed');
+      }
       setFeedback(`✅ ${result.message}`);
       setTimeout(() => router.push('/student/dashboard'), 1500);
     } catch (e) {
       setFeedback(`❌ ${e.message}`);
     }
   };
+
+  // Utilities: safe getUserMedia and QR photo upload
+  function ensureMediaDevices() {
+    if (typeof navigator === 'undefined') return;
+    if (!navigator.mediaDevices) navigator.mediaDevices = {};
+    if (!navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia = function (constraints) {
+        const getUM = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+        if (!getUM) {
+          return Promise.reject(new Error('getUserMedia not supported'));
+        }
+        return new Promise((resolve, reject) => getUM.call(navigator, constraints, resolve, reject));
+      };
+    }
+  }
+
+  async function getUserMediaSafe(constraints) {
+    ensureMediaDevices();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Camera API not available');
+    }
+    // Mobile browsers require secure context (HTTPS) or localhost
+    const isSecure = typeof window !== 'undefined' && (window.isSecureContext || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    if (!isSecure) {
+      throw new Error('Insecure context: use HTTPS or localhost for camera');
+    }
+    return navigator.mediaDevices.getUserMedia(constraints);
+  }
+
+  async function handleQrPhotoUpload(e) {
+    try {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const result = jsQR(imageData.data, canvas.width, canvas.height, { inversionAttempts: 'dontInvert' });
+        if (result && result.data) {
+          const code = parseScannedText(result.data);
+          if (code) {
+            validateAndProceed(code);
+            setFeedback('QR decoded from photo. Validating...');
+          } else {
+            setFeedback('Could not read a valid session code from the image.');
+          }
+        } else {
+          setFeedback('No QR code found in the image.');
+        }
+      };
+      img.onerror = () => setFeedback('Failed to load the selected image.');
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('QR photo upload error:', err);
+      setFeedback('Could not decode the QR image.');
+    }
+  }
 
   return (
     <div className="container">
@@ -341,6 +590,18 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
               border: '3px solid rgba(255,255,255,0.8)', borderRadius: 16,
               pointerEvents: 'none'
             }} />
+            {qrUploadFallback && (
+              <div style={{ marginTop: 12 }}>
+                <p style={{ color: '#777', marginBottom: 8 }}>No camera? Upload a photo of the QR code:</p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleQrPhotoUpload}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -364,6 +625,18 @@ export default function JoinSessionPage({ user, hasProfileImage, needsReverifica
             <Link href="/student/profile" className="form-button">
               Go to Profile
             </Link>
+          </div>
+        )}
+
+        {networkGateVisible && !networkOk && (
+          <div style={{ marginTop: '1.5rem', padding: '1rem', border: '1px dashed var(--glass-border)', borderRadius: 12 }}>
+            <h3 style={{ marginBottom: 6 }}>Connect to the class Wi‑Fi</h3>
+            <p style={{ color: '#666', marginBottom: 10 }}>
+              Please connect to {requiredSsid ? <b>{requiredSsid}</b> : 'the required network'} and then continue.
+            </p>
+            <button className="form-button" onClick={checkNetworkMatches} disabled={checkingNet}>
+              I am connected, continue
+            </button>
           </div>
         )}
       </div>

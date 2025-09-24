@@ -42,8 +42,19 @@ export default async function handler(req, res) {
       return res.status(403).json({ message: 'This session has expired.' });
     }
 
-    // If all checks pass, the session is valid
-    res.status(200).json({ message: 'Session is valid.' });
+    // If all checks pass, the session is valid; include minimal meta for client hints
+    res.status(200).json({
+      message: 'Session is valid.',
+      session: {
+        _id: sessionDoc._id,
+        endTime: sessionDoc.endTime,
+        validationRequirements: {
+          network: sessionDoc.validationRequirements?.network || null,
+          requireProximity: !!sessionDoc.validationRequirements?.requireProximity,
+          requireGeolocationValidation: !!sessionDoc.validationRequirements?.requireGeolocationValidation,
+        }
+      }
+    });
 
   } catch (error) {
     if (error.statusCode === 404) {

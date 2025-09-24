@@ -29,6 +29,7 @@ export default function LoginPage() {
     if (router.query.error) {
       const errorMessages = {
         CredentialsSignin: 'Invalid email or password. Please try again.',
+        SessionExpired: 'Your session has expired. Please sign in again.',
         default: 'An unknown error occurred during login.',
       };
       setError(errorMessages[router.query.error] || errorMessages.default);

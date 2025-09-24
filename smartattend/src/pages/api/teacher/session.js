@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
-  const { courseId, duration, networkInfo } = req.body; // e.g., courseId: "course:CS101"
+  const { courseId, duration, networkInfo, networkRequirement } = req.body; // e.g., courseId: "course:CS101"
 
   if (!courseId || !duration) {
     return res.status(400).json({ message: 'Missing course ID or duration' });
@@ -82,6 +82,12 @@ export default async function handler(req, res) {
         maxStudentsPerSession: req.body.maxStudents || 100,
         securityLevel: 'high', // high, medium, low
         antiSpoofingEnabled: true,
+        // New: explicit network requirement so students know where to connect
+        network: {
+          ssid: (networkRequirement && networkRequirement.ssid) ? String(networkRequirement.ssid).trim() : '',
+          requireSamePublicIp: !!(networkRequirement && networkRequirement.requireSamePublicIp),
+          expectedPublicIp: teacherIp || ''
+        }
       },
       attendanceStats: {
         totalStudents: 0,
